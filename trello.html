@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mini Trello-like Project (Single File)</title>
+  <style>
+    :root{ --bg:#f4f6f8; --card:#ffffff; --muted:#6b7280; --accent:#0ea5a4; --shadow: 0 6px 18px rgba(16,24,40,0.08);}    
+    *{box-sizing:border-box}
+    body{font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; margin:0; background:var(--bg); color:#0f172a}
+    header{display:flex;align-items:center;gap:12px;padding:14px 18px;background:linear-gradient(90deg,#fff 0%,#f8fafc 100%);border-bottom:1px solid rgba(15,23,42,0.04);position:sticky;top:0;z-index:5}
+    header .title{font-weight:700;font-size:18px}
+    .controls{margin-left:auto;display:flex;gap:8px;align-items:center}
+    .controls input[type=text]{padding:8px 10px;border-radius:8px;border:1px solid rgba(15,23,42,0.08);min-width:160px}
+    .btn{background:var(--accent);color:#fff;padding:8px 10px;border-radius:8px;border:0;cursor:pointer;font-weight:600}
+    .btn.ghost{background:transparent;border:1px solid rgba(15,23,42,0.06);color:var(--muted)}
+
+    .board-wrap{padding:18px}
+    .board{display:flex;gap:14px;align-items:flex-start;overflow:auto;padding-bottom:40px}
+    .column{width:280px;flex:0 0 280px;background:linear-gradient(180deg,#fff,#fbfdff);border-radius:12px;padding:12px;box-shadow:var(--shadow);border:1px solid rgba(15,23,42,0.03)}
+    .col-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+    .col-title{font-weight:700}
+    .col-meta{font-size:12px;color:var(--muted)}
+    .cards{margin-top:10px;display:flex;flex-direction:column;gap:8px;min-height:40px}
+    .card{background:var(--card);padding:10px;border-radius:10px;box-shadow:0 2px 6px rgba(15,23,42,0.04);cursor:grab;border:1px solid rgba(15,23,42,0.03)}
+    .card.dragging{opacity:0.6}
+    .card-title{font-weight:600}
+    .card-desc{font-size:13px;color:var(--muted);margin-top:6px}
+    .small{font-size:12px;color:var(--muted)}
+
+    .col-actions{display:flex;gap:6px}
+    .add-card{margin-top:8px;padding:8px;border-radius:8px;border:1px dashed rgba(15,23,42,0.06);background:transparent;cursor:pointer}
+
+    .modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(2,6,23,0.45);padding:20px}
+    .modal .panel{background:#fff;padding:16px;border-radius:10px;width:480px;max-width:95%;box-shadow:0 8px 30px rgba(2,6,23,0.3)}
+    .modal.hidden{display:none}
+    .form-row{display:flex;flex-direction:column;margin-bottom:10px}
+    .form-row input,.form-row textarea{padding:8px;border-radius:8px;border:1px solid rgba(15,23,42,0.06)}
+    .progress{height:10px;background:rgba(15,23,42,0.06);border-radius:999px;overflow:hidden}
+    .progress > i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),#7dd3fc);width:0%}
+
+    /* responsive */
+    @media (max-width:880px){.column{width:240px;flex:0 0 240px}} 
+    @media (max-width:640px){header{flex-wrap:wrap} .controls{margin-left:0;width:100%;justify-content:space-between} .board{padding:8px;gap:10px}}
+
+    /* helpers */
+    .text-muted{color:var(--muted)}
+    .pill{padding:6px 8px;border-radius:999px;font-size:12px;border:1px solid rgba(15,23,42,0.04)}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="title">Mini Trello — Project Board</div>
+    <div class="text-muted">Drag &amp; Drop • Local persistence • Export/Import</div>
+
+    <div class="controls">
+      <input type="text" id="search" placeholder="Search cards..." />
+      <button class="btn ghost" id="exportBtn">Export</button>
+      <button class="btn ghost" id="importBtn">Import</button>
+      <button class="btn" id="addColBtn">+ Column</button>
+    </div>
+  </header>
+
+  <div class="board-wrap">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+      <div class="small">Progress</div>
+      <div class="progress" style="flex:1"><i id="progressBar"></i></div>
+      <div id="progressText" class="small text-muted" style="min-width:120px;text-align:right">0 / 0</div>
+    </div>
+
+    <main class="board" id="board"></main>
+  </div>
+
+  <!-- Edit / Add Card Modal -->
+  <div id="modal" class="modal hidden" aria-hidden="true">
+    <div class="panel">
+      <h3 id="modalTitle">Card</h3>
+      <div class="form-row">
+        <label>Title</label>
+        <input id="cardTitleInput" type="text" />
+      </div>
+      <div class="form-row">
+        <label>Description</label>
+        <textarea id="cardDescInput" rows="4"></textarea>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn ghost" id="cancelBtn">Cancel</button>
+        <button class="btn" id="saveCardBtn">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hidden import textarea -->
+  <textarea id="importArea" style="display:none"></textarea>
+
+  <script>
+    /* ----------------- State + Persistence ----------------- */
+    const STORAGE_KEY = 'tms-mini-board-v1'
+
+    const defaultBoard = [
+      { id: genId(), title: 'To Do', cards: [ { id: genId(), title: 'Plan UI', desc: 'Create wireframes and mockups' }, { id: genId(), title: 'Setup repo', desc: 'Initialize git & README' } ] },
+      { id: genId(), title: 'In Progress', cards: [ { id: genId(), title: 'Build board', desc: 'Drag & drop, add cards' } ] },
+      { id: genId(), title: 'Done', cards: [] }
+    ]
+
+    let board = load() || defaultBoard
+    let dragSrc = null
+    let editing = null
+    let searchTerm = ''
+
+    /* ----------------- Helpers ----------------- */
+    function genId(){ return 'id_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8) }
+    function save(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(board)) }
+    function load(){ try{ const raw = localStorage.getItem(STORAGE_KEY); return raw ? JSON.parse(raw) : null }catch(e){console.error(e); return null} }
+
+    /* ----------------- Render ----------------- */
+    const boardEl = document.getElementById('board')
+    function render(){
+      boardEl.innerHTML = ''
+      const totalCards = board.reduce((s,c)=>s + c.cards.length,0)
+      const doneCards = (board.find(c => c.title.toLowerCase() === 'done') || {cards:[]}).cards.length
+      const progressPct = totalCards? Math.round(doneCards/totalCards*100) : 0
+      document.getElementById('progressBar').style.width = progressPct + '%'
+      document.getElementById('progressText').textContent = `${doneCards} / ${totalCards}`
+
+      board.forEach(col => {
+        const colWrap = document.createElement('section')
+        colWrap.className = 'column'
+        colWrap.dataset.colId = col.id
+
+        const header = document.createElement('div'); header.className = 'col-header'
+        header.innerHTML = `<div><div class='col-title'>${escapeHtml(col.title)}</div><div class='col-meta'>${col.cards.length} cards</div></div>`
+
+        const actions = document.createElement('div'); actions.className='col-actions'
+        const addBtn = document.createElement('button'); addBtn.className='add-card'; addBtn.textContent = '+ Add card'
+        addBtn.addEventListener('click', ()=> openModal('add', col.id))
+        const editColBtn = document.createElement('button'); editColBtn.className='btn ghost'; editColBtn.textContent='Edit'
+        editColBtn.addEventListener('click', ()=> renameColumn(col.id))
+        const delColBtn = document.createElement('button'); delColBtn.className='btn ghost'; delColBtn.textContent='Delete'
+        delColBtn.addEventListener('click', ()=> deleteColumn(col.id))
+        actions.appendChild(editColBtn); actions.appendChild(delColBtn)
+
+        header.appendChild(actions)
+        colWrap.appendChild(header)
+
+        const cardsWrap = document.createElement('div'); cardsWrap.className='cards'; cardsWrap.dataset.colId = col.id
+        cardsWrap.addEventListener('dragover', (e)=> onDragOver(e, cardsWrap))
+        cardsWrap.addEventListener('drop', (e)=> onDrop(e, cardsWrap))
+
+        col.cards.forEach(card => {
+          if(searchTerm && !(`${card.title} ${card.desc || ''}`.toLowerCase().includes(searchTerm.toLowerCase()))) return
+          const c = document.createElement('div'); c.className='card'; c.draggable = true
+          c.dataset.cardId = card.id; c.dataset.colId = col.id
+          c.innerHTML = `<div class='card-title'>${escapeHtml(card.title)}</div>
+                         ${card.desc? `<div class='card-desc'>${escapeHtml(card.desc)}</div>` : ''}
+                         <div style='display:flex;justify-content:space-between;margin-top:8px;align-items:center'>
+                           <div class='small text-muted'>#${card.id.slice(-6)}</div>
+                           <div style='display:flex;gap:6px'>
+                             <button class='btn ghost small' data-action='open'>Open</button>
+                           </div>
+                         </div>`
+
+          c.addEventListener('dragstart', onDragStart)
+          c.addEventListener('dragend', onDragEnd)
+          c.querySelector("button[data-action='open']").addEventListener('click', ()=> openModal('edit', col.id, card.id))
+          cardsWrap.appendChild(c)
+        })
+
+        colWrap.appendChild(cardsWrap)
+        colWrap.appendChild(addBtn)
+        boardEl.appendChild(colWrap)
+      })
+    }
+
+    /* ----------------- Drag & Drop ----------------- */
+    function onDragStart(e){
+      const cardId = this.dataset.cardId
+      const colId = this.dataset.colId
+      e.dataTransfer.setData('text/plain', JSON.stringify({cardId, colId}))
+      this.classList.add('dragging')
+    }
+    function onDragEnd(e){ this.classList.remove('dragging') }
+
+    function onDragOver(e, container){
+      e.preventDefault()
+      const afterEl = getDragAfterElement(container, e.clientY)
+      const dragging = document.querySelector('.card.dragging')
+      if(!dragging) return
+      if(afterEl == null) container.appendChild(dragging)
+      else container.insertBefore(dragging, afterEl)
+    }
+
+    function onDrop(e, container){
+      e.preventDefault()
+      const raw = e.dataTransfer.getData('text/plain')
+      if(!raw) return
+      try{
+        const {cardId, colId: fromColId} = JSON.parse(raw)
+        const toColId = container.dataset.colId
+        if(!cardId || !fromColId) return
+        moveCardInState(cardId, fromColId, toColId, Array.from(container.children).map(c=>c.dataset.cardId).filter(Boolean))
+        save(); render()
+      }catch(err){console.error(err)}
+    }
+
+    function getDragAfterElement(container, y){
+      const draggableElements = [...container.querySelectorAll('.card:not(.dragging)')]
+      return draggableElements.reduce((closest, child) => {
+        const box = child.getBoundingClientRect()
+        const offset = y - box.top - box.height/2
+        if(offset < 0 && offset > closest.offset) {
+          return { offset: offset, element: child }
+        } else return closest
+      }, {offset: Number.NEGATIVE_INFINITY}).element
+    }
+
+    function moveCardInState(cardId, fromColId, toColId, newOrderIds){
+      if(!cardId) return
+      const fromCol = board.find(c => c.id === fromColId)
+      const toCol = board.find(c => c.id === toColId)
+      if(!fromCol || !toCol) return
+      const card = fromCol.cards.find(cc => cc.id === cardId)
+      if(!card) return
+      // remove from source
+      fromCol.cards = fromCol.cards.filter(cc => cc.id !== cardId)
+      // place in target in the order shown in the DOM
+      const ordered = []
+      newOrderIds.forEach(id => {
+        const existing = (id === cardId) ? card : toCol.cards.find(cc => cc.id === id)
+        if(existing) ordered.push(existing)
+      })
+      // if something went wrong, append
+      if(!ordered.some(c=>c.id===cardId)) ordered.push(card)
+      toCol.cards = ordered
+    }
+
+    /* ----------------- Columns & Cards ops ----------------- */
+    function addColumn(title){ board.push({id:genId(), title: title||'New Column', cards:[]}); save(); render() }
+    function renameColumn(colId){ const col = board.find(c=>c.id===colId); const val = prompt('Rename column', col.title); if(val!==null){ col.title = val.trim() || col.title; save(); render() } }
+    function deleteColumn(colId){ if(!confirm('Delete this column and its cards?')) return; board = board.filter(c=>c.id!==colId); save(); render() }
+
+    function addCardToColumn(colId, title, desc){ const col = board.find(c=>c.id===colId); if(!col) return; col.cards.unshift({ id: genId(), title: title || 'Untitled', desc: desc || '' }); save(); render() }
+
+    function openModal(mode, colId, cardId){ editing = { mode, colId, cardId }
+      const modal = document.getElementById('modal'); modal.classList.remove('hidden'); modal.setAttribute('aria-hidden','false')
+      document.getElementById('modalTitle').textContent = mode === 'add' ? 'Add new card' : 'Edit card'
+      const titleIn = document.getElementById('cardTitleInput'); const descIn = document.getElementById('cardDescInput')
+      if(mode === 'add'){ titleIn.value=''; descIn.value=''; }
+      else{ const col = board.find(c=>c.id===colId); const card = col.cards.find(cc=>cc.id===cardId); titleIn.value = card.title; descIn.value = card.desc || '' }
+    }
+
+    function closeModal(){ editing = null; const modal = document.getElementById('modal'); modal.classList.add('hidden'); modal.setAttribute('aria-hidden','true') }
+
+    document.getElementById('cancelBtn').addEventListener('click', ()=> closeModal())
+    document.getElementById('saveCardBtn').addEventListener('click', ()=> {
+      const title = document.getElementById('cardTitleInput').value.trim(); const desc = document.getElementById('cardDescInput').value.trim()
+      if(!editing) return
+      if(editing.mode === 'add'){
+        addCardToColumn(editing.colId, title || 'Untitled', desc)
+      } else if(editing.mode === 'edit'){
+        const col = board.find(c=>c.id===editing.colId); const card = col.cards.find(cc=>cc.id===editing.cardId)
+        card.title = title || card.title; card.desc = desc; save(); render()
+      }
+      closeModal()
+    })
+
+    /* Open edit modal via double-click on card (optional) */
+
+    /* ----------------- Export / Import ----------------- */
+    document.getElementById('exportBtn').addEventListener('click', ()=>{
+      const payload = JSON.stringify(board, null, 2)
+      copyToClipboard(payload)
+      alert('Board JSON copied to clipboard. Use Import to restore on another machine.')
+    })
+
+    document.getElementById('importBtn').addEventListener('click', ()=>{
+      const json = prompt('Paste board JSON here')
+      if(!json) return
+      try{ const parsed = JSON.parse(json); if(Array.isArray(parsed)){ board = parsed; save(); render(); alert('Imported board!') } else alert('Invalid format') }catch(e){ alert('Invalid JSON') }
+    })
+
+    function copyToClipboard(text){ navigator.clipboard?.writeText(text).catch(()=>{ const ta=document.createElement('textarea'); ta.value=text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }) }
+
+    /* ----------------- UI Buttons ----------------- */
+    document.getElementById('addColBtn').addEventListener('click', ()=>{ const name = prompt('Column name'); if(name) addColumn(name.trim()) })
+
+    document.getElementById('search').addEventListener('input', (e)=>{ searchTerm = e.target.value.trim(); render() })
+
+    /* Modal add flow: when user clicks Add card on column, open modal in add mode */
+    // Hook: these actions were wired during render()
+
+    /* ----------------- Utilities ----------------- */
+    function escapeHtml(str){ return String(str).replace(/[&<>"']/g, function(m){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[m] }) }
+
+    /* ----------------- Init ----------------- */
+    render()
+
+    // Save periodically (safety)
+    setInterval(()=> save(), 5000)
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e)=>{
+      if(e.key === 'n' && (e.ctrlKey || e.metaKey)){
+        e.preventDefault(); const name = prompt('New column name'); if(name) addColumn(name.trim())
+      }
+      if(e.key === 'k' && (e.ctrlKey || e.metaKey)){
+        e.preventDefault(); document.getElementById('search').focus()
+      }
+    })
+  </script>
+</body>
+</html>
